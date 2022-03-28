@@ -1,0 +1,1721 @@
+-- PART 1 SAVINGS CALCULATIONS WITH SAVINGS DEPENDING ON PRODUCT CATEGORY E.G. BT BEHAVIOUR ASSUMPTIONS DIFFER FROM PURCHASE
+-- CREATE A TABLE OF NUMBERS TO BE USED TO DETERMINE MONTHS ON BOOK
+
+drop table if exists sb_numbers;
+create temporary table sb_numbers as
+select statement
+from (
+  select
+    gap_id,
+    rank()
+    over (
+      order by gap_id ) as statement
+  from post_processed_uk.signups
+)
+where statement <= 60;
+
+
+-- Get sample of 7 days of card searches
+
+drop table if exists sb_card_views_pre;
+create temporary table sb_card_views_pre as
+select  gap_id
+        ,"timestamp" as local_datetime
+        ,concat(properties_search_id,properties_sorted_by) as unique_id_pre
+        ,properties_population as population
+        ,properties_product_name as product_name
+        ,properties_product_id as product_id
+     	,case when properties_issuer='Marks and Spencer' then 'M&S' else properties_issuer end as issuer
+	,cast(properties_balance_transfer_term_months as float) as properties_balance_transfer_term_months
+	,cast(properties_balance_transfer_fee as float) as properties_balance_transfer_fee
+        ,cast(properties_purchase_term as float) as properties_purchase_term
+	,cast(properties_purchase_rate as float) as purchases_intro_apr
+	,cast(properties_cashback_rate as float) as properties_cashback_rate
+	,cast(properties_apr as float) as apr
+        ,case when cast(properties_apr as float) = 0 then 0 else cast((cast((1/cast(properties_apr as float)) as float))^0.5 as float)*10 end as apr_inv
+        ,case when cast(properties_eligibility as float) = -1 and properties_category = 'Not Shown' then 0
+	      when properties_issuer='Capital One' then 10
+	      when cast(properties_eligibility as float) = -1 and properties_category <> 'Not Shown' then 10
+              else cast(properties_eligibility as float) end as eligibility
+        ,properties_category as category
+        ,cast(properties_overall_rank as float) as overall_rank
+        ,cast(properties_cashback_savings as float) as cashbacksavings
+	,properties_sorting_model_version
+	,case when properties_is_triple_locked like '%true%' or properties_is_triple_locked like '%TRUE%' then 1 else 0 end as triple_lock_ind
+	,properties_sorted_by
+    	,case when properties_product_name = '' and cast(properties_apr as float) = 1 then '' else properties_product_name end as product_name_gamed
+
+
+from data_lake.event_be_credit_card_offer_returned as a
+    where date("timestamp") = '2021-11-21'
+    and cs_site = 'uk'
+  and properties_issuer not in ('GuarantorMyLoan','amigo','aspire','cashplus_cc','loqbox','trust_two','uk_credit') 
+  and (cast(properties_eligibility as float)>=5 or properties_issuer='Capital One')
+  and properties_is_scored = 'true'
+order by unique_id_pre, overall_rank;
+
+
+select count(gap_id) from sb_card_views_pre;
+-- 1,389,222
+
+-- Append on transactor / revolver flag
+
+create temp table revolver_flag as
+select
+gap_id,
+convert_timezone('UTC', 'Europe/London', "timestamp")::DATE      as local_date,
+properties_label
+
+from data_lake.event_be_user_segment_returned
+where date>='2021-01-01'
+and properties_label like '%revolver-3m-cc%';
+
+drop table if exists sb_bureau_summary;
+create temp table sb_bureau_summary as
+select
+gap_id,
+local_datetime,
+credit_score,
+50 * floor((credit_score / 50)) as cs_band_50,
+cc_debt,
+dense_rank() over (partition by gap_id order by timestamp) as report_number,
+dense_rank() over (partition by gap_id order by timestamp desc) as reverse_report_number
+
+from post_processed_uk.credit_report
+where local_date>='2021-10-01';
+
+drop table if exists sb_bureau_summary_2;
+create temp table sb_bureau_summary_2 as
+select
+a.*,
+a.local_datetime as report_start_datetime,
+case when b.local_datetime is null then current_date else b.local_datetime end as report_end_datetime
+
+from sb_bureau_summary as a
+left join
+sb_bureau_summary as b
+on a.gap_id=b.gap_id
+and a.report_number=b.report_number-1;
+
+
+-- Deduped to users that only searched once that day
+
+drop table if exists searches;
+create temp table searches
+as select
+gap_id
+,"timestamp" as local_datetime
+,case when lead("timestamp") over (partition by gap_id order by gap_id, "timestamp") is null then '9999-12-31'
+else lead("timestamp") over (partition by gap_id order by gap_id, "timestamp") end as next_local_datetime,
+case when properties_reason_getting_credit_card in ('balance-transfer','purchase','rewards') then properties_reason_getting_credit_card 
+else 'other' end as properties_reason_getting_credit_card 
+
+
+from data_lake.event_be_credit_card_questions_submitted
+where properties_journey_name in ('credit-card-triple-lock-questions-v2', 'credit-card-triple-lock-questions-v3', 'credit-card-triple-lock-questions-v4')
+and "timestamp" >= '2021-11-20';
+
+-- Deduped
+
+drop table if exists sb_card_views;
+create temporary table sb_card_views as
+select
+a.gap_id
+	,properties_sorted_by
+        ,population
+        ,product_name
+        ,product_id
+	,case when properties_balance_transfer_term_months is null then 0 else properties_balance_transfer_term_months end as properties_balance_transfer_term_months
+	,properties_balance_transfer_fee
+        ,case when properties_purchase_term is null then 0 else properties_purchase_term end as properties_purchase_term
+	,purchases_intro_apr
+	,properties_cashback_rate
+	,cashbacksavings
+	,apr
+        ,apr_inv
+        ,eligibility
+        ,category
+        ,issuer
+	,b.local_datetime as search_local_datetime
+	,b.next_local_datetime as search_next_local_datetime
+	,b.properties_reason_getting_credit_card
+	,concat(a.unique_id_pre,b.local_datetime) as unique_id
+	,triple_lock_ind
+	,product_name_gamed
+        ,min(overall_rank) as overall_rank
+from
+sb_card_views_pre as a
+inner join
+searches as b
+on a.gap_id=b.gap_id
+and a.local_datetime>=b.local_datetime
+and a.local_datetime<b.next_local_datetime
+group by 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22;
+
+
+drop table if exists sb_card_returns_pre;
+create temporary table sb_card_returns_pre as
+select
+	distinct
+
+	gap_id
+	,properties_sorted_by
+        ,credit_score
+        ,cs_band_50
+	,properties_ccdebt
+	,case when credit_score<=300 and properties_ccdebt<5000 then 1
+	when credit_score<=450 and properties_ccdebt<=1000 then 1
+        when credit_score<=300 and properties_ccdebt>=5000 then 2
+	when credit_score<=450 and properties_ccdebt<5000 then 2
+	when credit_score>450 and properties_ccdebt<=1000 then 2
+	else 3 end as projection_segment
+        ,product_name
+        ,product_id
+	,properties_balance_transfer_term_months
+	,properties_balance_transfer_fee
+        ,properties_purchase_term
+	,purchases_intro_apr
+	,properties_cashback_rate
+	,cashbacksavings
+        ,local_datetime
+        ,next_local_datetime
+        ,unique_id
+        ,population
+        ,apr
+        ,apr_inv
+        ,eligibility
+        ,category
+        ,overall_rank
+        ,issuer
+	,revolver
+	,properties_reason_getting_credit_card
+	,triple_lock_ind
+	,product_name_gamed
+	,row_number() over (partition by unique_ID||product_id order by local_datetime) as dedupe_rank
+from
+(select
+	a.gap_id
+	,properties_sorted_by
+        ,product_name
+        ,product_id
+	,properties_balance_transfer_term_months
+	,properties_balance_transfer_fee
+        ,properties_purchase_term
+	,purchases_intro_apr
+	,properties_cashback_rate
+	,cashbacksavings
+        ,a.search_local_datetime as local_datetime
+        ,a.search_next_local_datetime as next_local_datetime
+        ,a.unique_id
+        ,a.population
+        ,a.apr
+        ,a.apr_inv
+        ,a.eligibility
+        ,a.category
+        ,a.overall_rank
+        ,a.issuer
+	,a.properties_reason_getting_credit_card
+	,triple_lock_ind
+	,a.product_name_gamed
+	,min(case when credit_score is null then 0 else credit_score end) as credit_score
+    ,min(case when credit_score is null then 0 else cs_band_50 end) as cs_band_50
+	,min(case when cc_debt is null then 0 else cc_debt end) as properties_ccdebt
+	,max(case when d.gap_id is not null then 1 else 0 end) as revolver
+from sb_card_views as a
+inner join sb_bureau_summary_2 as c
+on a.gap_id = c.gap_id
+and a.search_local_datetime between c.report_start_datetime and c.report_end_datetime
+left join revolver_flag as d
+on a.gap_id=d.gap_id
+and trunc(a.search_local_datetime)=d.local_date
+group by 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23);
+
+
+drop table if exists sb_card_returns;
+create temporary table sb_card_returns as
+select
+*
+from sb_card_returns_pre
+where dedupe_rank=1;
+
+select count(gap_id) from sb_card_returns;
+-- 1,188,709
+
+delete from sb_card_returns where eligibility < 5;
+delete from sb_card_returns where eligibility is null;
+delete from sb_card_returns where credit_score is null;
+
+
+select count(gap_id) from sb_card_returns;
+-- 714,431
+
+
+-- Explode out to 60 statements for each offer returned
+
+drop table if exists sb_card_returns_exploded_pre;
+create temporary table sb_card_returns_exploded_pre as
+select
+a.*,
+b.statement
+
+
+from sb_card_returns as a
+join sb_numbers as b
+on 1=1;
+
+
+-- Import segment level input assumptions
+
+create temporary table sb_input_asmpts_pre (
+Statement integer,
+Segment	integer,
+bt_bucket_split	decimal(16,8),
+bt_bucket_split2 decimal(16,8),
+projected_balance decimal(16,8)
+);
+
+copy sb_input_asmpts_pre (Statement,
+Segment,
+bt_bucket_split,
+bt_bucket_split2,
+projected_balance)
+from 's3://clearscore-gallium-data-lake-global-prd-partner-files/sam/saving-calcs-assumptions-new.csv'
+iam_role 'arn:aws:iam::233222489554:role/gallium-global-prd-redshift-monetise'
+region 'eu-west-1'
+DELIMITER ','
+TIMEFORMAT 'auto'
+TRUNCATECOLUMNS MAXERROR 100000;
+
+drop table if exists sb_input_asmpts2;
+create table sb_input_asmpts2
+as select distinct * from sb_input_asmpts_pre;
+
+
+-- Append on bt bucket split assumption for when card ranked with bt category
+-- Append on bt bucket split assumption for all other ranking
+-- Append on total balance assumption for all ranking
+
+drop table if exists sb_card_returns_exploded;
+create temporary table sb_card_returns_exploded as
+select
+a.*,
+b.bt_bucket_split,
+b.bt_bucket_split2,
+b.projected_balance
+
+
+from sb_card_returns_exploded_pre as a
+inner join
+sb_input_asmpts2 as b
+on a.statement=b.statement
+and a.projection_segment=b.segment;
+
+
+
+-- Calculate savings for each card and statement
+
+drop table if exists sb_card_returns_exploded2;
+create temporary table sb_card_returns_exploded2 as
+select
+*,
+projected_balance*bt_bucket_split as bt_balance_1,
+projected_balance-bt_balance_1 as purchases_balance_1,
+projected_balance*bt_bucket_split2 as bt_balance_2,
+projected_balance-bt_balance_2 as purchases_balance_2,
+power((1+purchases_intro_apr*0.01),(1.000000/12))-1 as purchases_intro_monthly_rt,
+power((1+apr*0.01),(1.000000/12))-1 as go_to_monthly_rt
+
+from sb_card_returns_exploded;
+
+drop table if exists sb_card_returns_exploded3;
+create temporary table sb_card_returns_exploded3 as
+select
+*,
+case when statement<=properties_balance_transfer_term_months then 0
+else bt_balance_1*go_to_monthly_rt end as bt_interest_1,
+case when statement<=properties_purchase_term then purchases_balance_1*purchases_intro_monthly_rt
+else purchases_balance_1*go_to_monthly_rt end as purchases_interest_1,
+case when statement<=properties_balance_transfer_term_months then 0
+else bt_balance_2*go_to_monthly_rt end as bt_interest_2,
+case when statement<=properties_purchase_term then purchases_balance_2*purchases_intro_monthly_rt
+else purchases_balance_2*go_to_monthly_rt end as purchases_interest_2,
+case when statement=3 then bt_balance_1*(case when properties_balance_transfer_fee is null then 0 else properties_balance_transfer_fee end)*0.01 else 0 end as bt_fees_1,
+case when statement=3 then bt_balance_2*(case when properties_balance_transfer_fee is null then 0 else properties_balance_transfer_fee end)*0.01 else 0 end as bt_fees_2
+
+from sb_card_returns_exploded2;
+
+
+-- Aggregate over statements
+
+drop table if exists sb_card_returns_savings;
+create temporary table sb_card_returns_savings as
+select
+gap_id
+	,properties_sorted_by
+        ,unique_id
+        ,population
+        ,product_name
+        ,product_id
+	,properties_balance_transfer_term_months
+	,properties_balance_transfer_fee
+        ,properties_purchase_term
+	,properties_cashback_rate
+	,purchases_intro_apr
+	,apr
+        ,eligibility
+	,power(eligibility,2) as eligibility_squared
+        ,category
+        ,overall_rank
+	,credit_score
+    ,cs_band_50
+	,properties_ccdebt
+	,local_datetime
+	,next_local_datetime
+	,cashbacksavings
+        ,issuer
+	,revolver
+	,properties_reason_getting_credit_card
+	,triple_lock_ind
+	,product_name_gamed
+	,sum(bt_interest_1+purchases_interest_1+bt_fees_1) as tcc_calc_bt_category
+	,sum(bt_interest_2+purchases_interest_2+bt_fees_2) as tcc_calc_other_categories_ex_cashback
+
+from sb_card_returns_exploded3
+group by 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27;
+
+
+select count(gap_id) from sb_card_returns_savings;
+-- 714,431
+
+
+
+-- PART 2 PRODUCT SCORING, NOTE THIS HAPPENS MULTIPLE TIMES - EACH PRODCUT HAS A BT, CHASHBACK AND A PURCHASE / STANDARD SCORE
+-- Get max cost of credit to normalise savings
+
+drop table if exists sb_max_tcc;
+create temp table sb_max_tcc as
+select
+gap_id
+,unique_id
+,local_datetime
+, max(tcc_calc_bt_category) as max_tcc_calc_bt_category
+, max(tcc_calc_other_categories_ex_cashback) as max_tcc_calc_other_categories_ex_cashback
+, max(cashbacksavings) as max_cashbacksavings
+, max(eligibility_squared) as max_elig_sq
+from sb_card_returns_savings
+group by 1,2,3;
+
+
+-- Score products depending on where product is appearing
+
+create temp table sb_products_scored_pre as
+select
+a.*
+, b.max_tcc_calc_bt_category
+, b.max_tcc_calc_other_categories_ex_cashback
+, b.max_cashbacksavings
+, b.max_elig_sq
+, case when tcc_calc_bt_category=0 then 0 else tcc_calc_bt_category/(1.00*max_tcc_calc_bt_category) end as normalised_bt_cost
+, case when tcc_calc_other_categories_ex_cashback=0 then 0 else tcc_calc_other_categories_ex_cashback/(1.00* max_tcc_calc_other_categories_ex_cashback) end as normalised_standard_cost
+, case when cashbacksavings=0 then 0 else cashbacksavings/(1.00*max_cashbacksavings) end as normalised_cashbacksavings
+, eligibility_squared/(1.00*max_elig_sq) as normalised_eligibility
+from sb_card_returns_savings as a
+inner join sb_max_tcc as b
+on a.gap_id=b.gap_id
+and a.unique_id=b.unique_id;
+
+
+-- Load in weightings file from S3
+
+drop table if exists weightings;
+create temporary table weightings (
+                                             score_band INT,
+                                             eligibility_weight INT,
+                                             triple_lock_weight FLOAT(20),
+                                             eligibility_weight_test_1 INT,
+                                             triple_lock_weight_test_1 FLOAT(20),
+                                             eligibility_weight_test_2 INT,
+                                             triple_lock_weight_test_2 FLOAT(20)
+);
+
+copy weightings (
+                                             score_band,
+                                             eligibility_weight,
+                                             triple_lock_weight,
+                                             eligibility_weight_test_1,
+                                             triple_lock_weight_test_1,
+                                             eligibility_weight_test_2,
+                                             triple_lock_weight_test_2
+
+    )
+    from 's3://clearscore-gallium-data-lake-global-prd-partner-files/cards-algo/cards_algo_weightings.csv'
+    iam_role 'arn:aws:iam::233222489554:role/gallium-global-prd-redshift-monetise'
+    region 'eu-west-1'
+    delimiter ','
+    timeformat 'auto'
+    dateformat 'DD/MM/YYYY'
+    truncatecolumns MAXERROR 100000
+;
+
+create temp table sb_products_scored as
+    select a.*,
+           b.eligibility_weight as elig_weight,
+           b.triple_lock_weight
+    from sb_products_scored_pre as a
+    left join weightings as b
+        on a.cs_band_50 = b.score_band
+;
+
+
+
+create temp table sb_products_scored2 as
+select
+*
+, cast((elig_weight*normalised_eligibility-10*normalised_bt_cost+triple_lock_weight*triple_lock_ind) as decimal (12,8)) as bt_category_rank_score
+, cast((elig_weight*normalised_eligibility-10*normalised_standard_cost+triple_lock_weight*triple_lock_ind) as decimal (12,8)) as standard_rank_score
+, cast((elig_weight*normalised_eligibility+10*normalised_cashbacksavings-1*normalised_standard_cost+triple_lock_weight*triple_lock_ind) as decimal (12,8)) as cashback_rank_score
+from sb_products_scored
+where properties_sorted_by not in ('ELIGIBILITY_DESC',
+'PO_DURATION_DESC',
+'BT_DURATION_DESC',
+'APR_ASC');
+
+
+select
+count(unique_id) as rows,
+count(distinct unique_ID||product_id) as correct_count
+from sb_products_scored2
+limit 100;
+
+
+create temp table sb_products_scored2_filtered as
+select
+*
+, cast((elig_weight*normalised_eligibility-10*normalised_bt_cost+0.09*triple_lock_ind) as decimal (12,8)) as bt_category_rank_score
+, cast((elig_weight*normalised_eligibility-10*normalised_standard_cost+0.09*triple_lock_ind) as decimal (12,8)) as standard_rank_score
+, cast((elig_weight*normalised_eligibility+10*normalised_cashbacksavings-1*normalised_standard_cost+0.09*triple_lock_ind) as decimal (12,8)) as cashback_rank_score
+from sb_products_scored
+where properties_sorted_by in ('ELIGIBILITY_DESC',
+'PO_DURATION_DESC',
+'BT_DURATION_DESC',
+'APR_ASC');
+
+
+-- PART 3 - PRODUCT CATEGORY ASSIGNMENT
+-- Pull in product catalogue
+
+create temporary table sb_product_catalogue_pre (
+Product VARCHAR(50),
+ALTERNATIVE VARCHAR(50),
+BALANCE_TRANSFER VARCHAR(50),
+CASHBACK VARCHAR(50),
+CREDIT_BUILDER VARCHAR(50),
+GUARANTORS VARCHAR(50),
+LOW_APR	VARCHAR(50),
+POOR_CREDIT VARCHAR(50),
+PURCHASE VARCHAR(50),
+REWARDS	VARCHAR(50),
+STATIC_CARD VARCHAR(50));
+
+copy sb_product_catalogue_pre (Product,
+ALTERNATIVE,
+BALANCE_TRANSFER,
+CASHBACK,
+CREDIT_BUILDER,
+GUARANTORS,
+LOW_APR,
+POOR_CREDIT,
+PURCHASE,
+REWARDS,
+STATIC_CARD)
+from 's3://clearscore-gallium-data-lake-global-prd-partner-files/sam/product_catalogue_20220114.csv'
+iam_role 'arn:aws:iam::233222489554:role/gallium-global-prd-redshift-monetise'
+region 'eu-west-1'
+DELIMITER ','
+TIMEFORMAT 'auto'
+TRUNCATECOLUMNS MAXERROR 100000;
+
+
+-- Apply product catalogue overrides
+
+create temporary table sb_product_catalogue as
+select
+Product,
+ALTERNATIVE,
+BALANCE_TRANSFER,
+CASHBACK,
+CREDIT_BUILDER,
+GUARANTORS,
+LOW_APR,
+case when product in ('CSCC191',
+'CSCC190',
+'CSCC20',
+'118DIRECTBT1',
+'CSCC192')
+then 1 else cast(POOR_CREDIT as int) end as POOR_CREDIT,
+PURCHASE,
+REWARDS,
+STATIC_CARD
+
+from sb_product_catalogue_pre
+where product<>'Product';
+
+
+-- PART 3.1 SORTING FOR FILTERED RESULTS
+
+
+create temp table filtered_ordering as
+select
+gap_id
+,unique_id
+, product_id
+, local_datetime
+, next_local_datetime
+, issuer
+, properties_sorted_by
+, row_number() over (partition by unique_id order by properties_balance_transfer_term_months desc, bt_category_rank_score desc, product_id) as filtered_bt_rank
+, row_number() over (partition by unique_id order by properties_purchase_term desc, standard_rank_score desc, product_id) as filtered_pt_rank
+, row_number() over (partition by unique_id order by eligibility desc, standard_rank_score desc, product_id) as filtered_elig_rank
+, row_number() over (partition by unique_id order by apr, standard_rank_score desc, product_id) as filtered_apr_rank
+
+from sb_products_scored2_filtered;
+
+
+create temp table filtered_ordering2 as
+select
+a.*
+, case when a.properties_sorted_by='ELIGIBILITY_DESC' then filtered_elig_rank
+when a.properties_sorted_by='PO_DURATION_DESC' then filtered_pt_rank
+when a.properties_sorted_by='BT_DURATION_DESC' then filtered_bt_rank
+when a.properties_sorted_by='APR_ASC' then filtered_apr_rank
+else 0 end as rank2,
+row_number() over (partition by a.unique_id order by a.overall_rank) as current_rank2
+
+from sb_products_scored2_filtered as a
+left join filtered_ordering as b
+on a.unique_id=b.unique_id
+and a.product_id=b.product_id;
+
+
+-- PART 3.2 SORTING FOR NON FILTERED RESULTS
+-- PART 3A - CATEGORY AND PRODUCT RANKING FOR LOW PRODUCT CHOICE USERS
+-- NOTE THIS IS BASED SOLELY ON PURCHASE SAVINGS WITH ALL CARDS APPEARING IN BUILDER
+
+-- Get searches with only builder results
+
+create temp table only_builder
+as select
+gap_id,
+unique_id,
+product_id,
+local_datetime,
+next_local_datetime,
+properties_reason_getting_credit_card,
+max(case when ((cast(ALTERNATIVE as int)+cast(CREDIT_BUILDER as int)+cast(GUARANTORS as int)+cast(POOR_CREDIT as int)+cast(STATIC_CARD as int)>0)
+and apr>25) or (product_id='zopa_card_builder' or product_id='lendable_level_card')
+then 1 else 0 end) as non_prime_product_ind
+
+from sb_products_scored2 as a
+inner join sb_product_catalogue as b
+on a.product_id=b.product
+group by 1,2,3,4,5,6;
+
+
+create temp table prime_product_returned
+as select
+distinct
+gap_id,
+unique_id,
+local_datetime,
+next_local_datetime
+
+from only_builder
+where non_prime_product_ind=0
+-- Add in condition to exclude users looking for BT from only builder
+or properties_reason_getting_credit_card='balance-transfer';
+
+
+-- Add in table to identify BT only builder popn for later
+
+create temp table saw_prime_prod_non_bt_adjt
+as select
+distinct
+gap_id,
+unique_id,
+local_datetime,
+next_local_datetime
+
+from only_builder
+where non_prime_product_ind=0;
+
+
+create temp table only_builder2
+as select
+distinct
+a.gap_id,
+a.unique_id,
+a.local_datetime,
+a.next_local_datetime
+
+from only_builder as a
+left join prime_product_returned as b
+on a.gap_id=b.gap_id
+and a.unique_id=b.unique_id
+where b.gap_id is null;
+
+
+create temp table only_builder3
+as select
+distinct
+a.unique_id,
+a.product_id,
+row_number() over (partition by a.unique_id,a.issuer order by a.standard_rank_score desc, a.product_id) as issuer_rank
+from sb_products_scored2 as a
+inner join only_builder2 as b
+on a.unique_id=b.unique_id;
+
+
+
+-- Ranking over product ID where scores are equal to allow for deterministic unit testings, in production we should randomise over matched scores
+-- Figure out if there will be less than 5 results if no more than 2 results per issuer rule applied
+
+create temp table low_choice_rank_pre as
+select
+a.unique_id,
+count(a.product_id) as results
+
+from sb_products_scored2 as a
+inner join only_builder3 as b
+on a.unique_id=b.unique_id
+and a.product_id=b.product_id
+where b.issuer_rank<=2
+group by 1;
+
+
+-- Do sorting without issuer cap in cases where less than 5 if rule applied
+
+create temp table low_choice_rank_group1 as
+select * from
+(select
+a.*,
+row_number() over (partition by a.unique_id order by a.standard_rank_score desc, a.product_id) as rank2,
+row_number() over (partition by a.unique_id order by a.overall_rank) as current_rank2
+
+from sb_products_scored2 as a
+inner join only_builder3 as b
+on a.unique_id=b.unique_id
+and a.product_id=b.product_id
+left join low_choice_rank_pre as c
+on a.unique_id=c.unique_id
+where c.results<=5)
+where rank2<=5;
+
+
+-- Do sorting with issuer cap otherwise
+
+create temp table low_choice_rank_group2 as
+select * from
+(select
+a.*,
+row_number() over (partition by a.unique_id order by a.standard_rank_score desc, a.product_id) as rank2,
+row_number() over (partition by a.unique_id order by a.overall_rank) as current_rank2
+
+from sb_products_scored2 as a
+inner join only_builder3 as b
+on a.unique_id=b.unique_id
+and a.product_id=b.product_id
+left join low_choice_rank_pre as c
+on a.unique_id=c.unique_id
+where c.results>5
+and b.issuer_rank<=2)
+where rank2<=5;
+
+
+-- Pull list of potential products for best of the rest
+
+create temp table low_choice_best_of_the_rest as
+select
+a.*,
+row_number() over (partition by a.unique_id order by a.standard_rank_score desc, a.product_id) as rank2,
+row_number() over (partition by a.unique_id order by a.overall_rank) as current_rank2
+
+from sb_products_scored2 as a
+inner join only_builder3 as b
+on a.unique_id=b.unique_id
+and a.product_id=b.product_id
+left join low_choice_rank_group1 as c
+on a.unique_id=c.unique_id
+and a.product_id=c.product_id
+left join low_choice_rank_group2 as d
+on a.unique_id=d.unique_id
+and a.product_id=d.product_id
+where c.product_id is null
+and d.product_id is null;
+
+
+-- Merge results
+
+create temp table low_choice_rank_merge as
+select
+*,
+rank2 as rank3
+from low_choice_rank_group1
+union
+select
+*,
+rank2 as rank3
+from low_choice_rank_group2
+union
+select
+*,
+10+rank2 as rank3
+from low_choice_best_of_the_rest;
+
+create temp table low_choice_rank as
+select
+*,
+row_number() over (partition by unique_id order by rank3) as final_rank
+from low_choice_rank_merge;
+
+
+select count(gap_id) from low_choice_rank;
+-- 149,980
+
+
+-- PART 3B - CATEGORY AND PRODUCT RANKING FOR HIGH PRODUCT CHOICE USERS
+-- THIS LEVERAGES CATEGORY CLICK PROPENSITY ALONGSIDE PRODUCT SCORING FOR RANKING
+
+-- Get top 5 BT cards
+
+create temp table top_bt as
+select
+gap_id
+,unique_id
+, product_id
+, local_datetime
+, next_local_datetime
+, issuer
+, row_number() over (partition by unique_id order by bt_category_rank_score desc, product_id) as rank
+from sb_products_scored2 as a
+inner join sb_product_catalogue as b
+on a.product_id=b.product
+and b.BALANCE_TRANSFER=1;
+
+
+-- Get top 5 Purchase cards
+
+create temp table top_purchase as
+select
+gap_id
+,unique_id
+, product_id
+, local_datetime
+, next_local_datetime
+, issuer
+, row_number() over (partition by unique_id order by standard_rank_score desc, product_id) as rank
+from sb_products_scored2 as a
+inner join sb_product_catalogue as b
+on a.product_id=b.product
+and (b.PURCHASE=1
+or b.LOW_APR=1)
+and b.CREDIT_BUILDER=0
+and b.POOR_CREDIT=0;
+
+
+-- Get top 5 builder
+
+create temp table top_builder as
+select
+gap_id
+,unique_id
+, product_id
+, local_datetime
+, next_local_datetime
+, issuer
+, row_number() over (partition by unique_id order by standard_rank_score desc, product_id) as rank
+from sb_products_scored2 as a
+inner join sb_product_catalogue as b
+on a.product_id=b.product
+and (b.CREDIT_BUILDER=1
+or b.POOR_CREDIT=1);
+
+
+
+-- Get top 5 cashback
+
+create temp table top_cashback as
+select
+gap_id
+,unique_id
+, product_id
+, local_datetime
+, next_local_datetime
+, issuer
+, row_number() over (partition by unique_id order by cashback_rank_score desc, product_id) as rank
+
+from sb_products_scored2 as a
+inner join sb_product_catalogue as b
+on a.product_id=b.product
+and (b.CASHBACK=1
+or b.REWARDS=1);
+
+
+-- Union ranked products
+
+drop table if exists category_rank_product_pre;
+create table category_rank_product_pre as
+select
+gap_id
+,unique_id
+, product_id
+, rank
+, local_datetime
+, next_local_datetime
+, issuer
+, 'BALANCE_TRANSFER' as category
+from top_bt
+union
+select
+gap_id
+,unique_id
+, product_id
+, rank
+, local_datetime
+, next_local_datetime
+, issuer
+, 'PURCHASE' as category
+from top_purchase
+union
+select
+gap_id
+,unique_id
+, product_id
+, rank
+, local_datetime
+, next_local_datetime
+, issuer
+, 'POOR_CREDIT' as category
+from top_builder
+union
+select
+gap_id
+,unique_id
+, product_id
+, rank
+, local_datetime
+, next_local_datetime
+, issuer
+, 'CASHBACK' as category
+from top_cashback;
+
+
+
+-- Pull in category rank order
+
+create temporary table sb_category_rank (
+only_builder integer,
+properties_reason_getting_credit_card VARCHAR(50),
+lower_cc_debt DECIMAL,
+upper_cc_debt DECIMAL,
+revolver integer,
+Category_rank DECIMAL,
+Category VARCHAR(50));
+
+copy sb_category_rank (only_builder,
+properties_reason_getting_credit_card,
+lower_cc_debt,
+upper_cc_debt,
+revolver,
+Category_rank,
+Category)
+from 's3://clearscore-gallium-data-lake-global-prd-partner-files/sam/Category_rank_input_granular_questions_20211201.csv'
+iam_role 'arn:aws:iam::233222489554:role/gallium-global-prd-redshift-monetise'
+region 'eu-west-1'
+DELIMITER ','
+TIMEFORMAT 'auto'
+TRUNCATECOLUMNS MAXERROR 100000;
+
+
+create temp table sb_products_scored2_adj as
+select
+a.gap_id,
+a.unique_id,
+a.product_id,
+a.local_datetime,
+case when a.credit_score is null then 0 else a.credit_score end as credit_score,
+a.cs_band_50,
+case when a.properties_ccdebt is null then 0 else a.properties_ccdebt end as cc_debt,
+a.revolver,
+a.properties_reason_getting_credit_card,
+max(case when b.unique_id is not null then 0 else 1 end) as only_builder
+
+from sb_products_scored2 as a
+left join saw_prime_prod_non_bt_adjt as b
+on a.unique_id=b.unique_id
+and a.local_datetime=b.local_datetime
+group by 1,2,3,4,5,6,7,8,9;
+
+
+-- Rank products based on category rank then top 5 from each of relevant groups
+
+
+create temp table category_rank_product2 as
+select
+a.gap_id
+, a.unique_id
+, a.product_id
+, a.rank
+, a.category
+, a.local_datetime
+, a.next_local_datetime
+, a.issuer
+, b.credit_score
+, b.cs_band_50
+, c.category_rank
+
+from category_rank_product_pre as a
+inner join
+sb_products_scored2_adj as b
+on a.gap_id=b.gap_id
+and a.unique_id=b.unique_id
+and a.product_id=b.product_id
+and a.local_datetime=b.local_datetime
+left join
+sb_category_rank as c
+on b.only_builder=c.only_builder
+and b.revolver=c.revolver
+and b.cc_debt>=c.lower_cc_debt
+and b.cc_debt<c.upper_cc_debt
+and trim(a.category)=trim(c.Category)
+and b.properties_reason_getting_credit_card=c.properties_reason_getting_credit_card;
+
+
+
+-- Get top 5 category rank 1 products for each search
+
+create temp table top_1 as
+select
+*,
+category as new_category,
+rank as rank2
+
+from category_rank_product2
+where category_rank=1
+and rank<=1;
+
+create temp table second_1 as
+select * from
+(select
+a.*,
+a.category as new_category,
+row_number() over (partition by a.unique_id order by a.rank) as rank2
+
+from category_rank_product2 as a
+left join top_1 as b
+on a.gap_id=b.gap_id
+and a.unique_id=b.unique_id
+and a.local_datetime=b.local_datetime
+and a.product_id=b.product_id
+where a.category_rank=2
+and b.product_id is null)
+where rank2<=1;
+
+create temp table top_2_5 as
+select
+gap_id
+, unique_id
+, product_id
+, rank
+, category
+, local_datetime
+, next_local_datetime
+, issuer
+, credit_score
+, cs_band_50
+, category_rank
+, new_category
+, rank2
+
+from
+(select
+*, row_number() over (partition by unique_id order by rank) as rank2
+from
+(select
+a.*,
+a.category as new_category,
+row_number() over (partition by a.unique_id,a.issuer order by a.rank) as issuer_rank
+
+from category_rank_product2 as a
+left join top_1 as b
+on a.gap_id=b.gap_id
+and a.unique_id=b.unique_id
+and a.local_datetime=b.local_datetime
+and a.product_id=b.product_id
+left join second_1 as c
+on a.gap_id=c.gap_id
+and a.unique_id=c.unique_id
+and a.local_datetime=c.local_datetime
+and a.product_id=c.product_id
+where a.category_rank=1
+and b.product_id is null
+and c.product_id is null)
+where issuer_rank<=2)
+where rank2<=4;
+
+create temp table second_2_5 as
+select
+gap_id
+, unique_id
+, product_id
+, rank
+, category
+, local_datetime
+, next_local_datetime
+, issuer
+, credit_score
+, cs_band_50
+, category_rank
+, new_category
+, rank2
+
+from
+(select
+*, row_number() over (partition by unique_id order by rank) as rank2
+from
+(select
+a.*,
+a.category as new_category,
+row_number() over (partition by a.unique_id,a.issuer order by a.rank) as issuer_rank
+
+from category_rank_product2 as a
+left join top_1 as b
+on a.gap_id=b.gap_id
+and a.unique_id=b.unique_id
+and a.local_datetime=b.local_datetime
+and a.product_id=b.product_id
+left join second_1 as c
+on a.gap_id=c.gap_id
+and a.unique_id=c.unique_id
+and a.local_datetime=c.local_datetime
+and a.product_id=c.product_id
+left join top_2_5 as d
+on a.gap_id=d.gap_id
+and a.unique_id=d.unique_id
+and a.local_datetime=d.local_datetime
+and a.product_id=d.product_id
+where a.category_rank=2
+and b.product_id is null
+and c.product_id is null
+and d.product_id is null)
+where issuer_rank<=2)
+where rank2<=4;
+
+create temp table top_5 as
+select
+gap_id
+, unique_id
+, product_id
+, rank
+, category
+, local_datetime
+, next_local_datetime
+, issuer
+, credit_score
+, cs_band_50
+, category_rank
+, new_category
+, rank2
+from top_1
+union
+select
+gap_id
+, unique_id
+, product_id
+, rank
+, category
+, local_datetime
+, next_local_datetime
+, issuer
+, credit_score
+, cs_band_50
+, category_rank
+, new_category
+, rank2+1 as rank2
+from top_2_5;
+
+create temp table second_5 as
+select
+gap_id
+, unique_id
+, product_id
+, rank
+, category
+, local_datetime
+, next_local_datetime
+, issuer
+, credit_score
+, cs_band_50
+, category_rank
+, new_category
+, rank2
+from second_1
+union
+select
+gap_id
+, unique_id
+, product_id
+, rank
+, category
+, local_datetime
+, next_local_datetime
+, issuer
+, credit_score
+, cs_band_50
+, category_rank
+, new_category
+, rank2+1 as rank2
+from second_2_5;
+
+create temp table third_5 as
+select
+gap_id
+, unique_id
+, product_id
+, rank
+, category
+, local_datetime
+, next_local_datetime
+, issuer
+, credit_score
+, cs_band_50
+, category_rank
+, new_category
+, rank2
+
+from
+(select
+*, row_number() over (partition by unique_id order by rank) as rank2
+from
+(select
+a.*,
+a.category as new_category,
+row_number() over (partition by a.unique_id,a.issuer order by a.rank) as issuer_rank
+
+from category_rank_product2 as a
+left join top_5 as b
+on a.gap_id=b.gap_id
+and a.unique_id=b.unique_id
+and a.product_id=b.product_id
+and a.local_datetime=b.local_datetime
+left join second_5 as c
+on a.gap_id=c.gap_id
+and a.unique_id=c.unique_id
+and a.product_id=c.product_id
+and a.local_datetime=c.local_datetime
+where a.category_rank=3
+and b.product_id is null
+and c.product_id is null)
+where issuer_rank<=2)
+where rank2<=5;
+
+create temp table fourth_5 as
+select
+gap_id
+, unique_id
+, product_id
+, rank
+, category
+, local_datetime
+, next_local_datetime
+, issuer
+, credit_score
+, cs_band_50
+, category_rank
+, new_category
+, rank2
+
+from
+(select
+*, row_number() over (partition by unique_id order by rank) as rank2
+from
+(select
+a.*,
+a.category as new_category,
+row_number() over (partition by a.unique_id,a.issuer order by a.rank) as issuer_rank
+
+from category_rank_product2 as a
+left join top_5 as b
+on a.gap_id=b.gap_id
+and a.unique_id=b.unique_id
+and a.product_id=b.product_id
+and a.local_datetime=b.local_datetime
+left join second_5 as c
+on a.gap_id=c.gap_id
+and a.unique_id=c.unique_id
+and a.product_id=c.product_id
+and a.local_datetime=c.local_datetime
+left join third_5 as d
+on a.gap_id=d.gap_id
+and a.unique_id=d.unique_id
+and a.product_id=d.product_id
+and a.local_datetime=d.local_datetime
+where a.category_rank=4
+and b.product_id is null
+and c.product_id is null
+and d.product_id is null)
+where issuer_rank<=2)
+where rank2<=5;
+
+
+
+create temp table best_of_the_rest as
+select
+gap_id
+, unique_id
+, product_id
+, rank
+, category
+, local_datetime
+, next_local_datetime
+, issuer
+, credit_score
+, cs_band_50
+, category_rank
+, 'BEST_OF_THE_REST' as new_category
+, row_number() over (partition by unique_id order by standard_rank_score desc, product_id) as rank2
+from
+(select distinct * from
+(select
+a.gap_id
+, a.unique_id
+, a.product_id
+, a.rank
+, a.category
+, a.local_datetime
+, a.next_local_datetime
+, a.issuer
+, a.credit_score
+, a.cs_band_50
+, a.category_rank
+, a2.standard_rank_score
+, row_number() over (partition by a.unique_id||a.product_id order by a.local_datetime desc) as rev_rank
+from category_rank_product2 as a
+left join
+sb_products_scored2 as a2
+on a.gap_id=a2.gap_id
+and a.unique_id=a2.unique_id
+and a.product_id=a2.product_id
+and a.local_datetime=a2.local_datetime
+left join top_5 as b
+on a.gap_id=b.gap_id
+and a.unique_id=b.unique_id
+and a.product_id=b.product_id
+and a.local_datetime=b.local_datetime
+left join second_5 as c
+on a.gap_id=c.gap_id
+and a.unique_id=c.unique_id
+and a.product_id=c.product_id
+and a.local_datetime=c.local_datetime
+left join third_5 as d
+on a.gap_id=d.gap_id
+and a.unique_id=d.unique_id
+and a.product_id=d.product_id
+and a.local_datetime=d.local_datetime
+left join fourth_5 as e
+on a.gap_id=e.gap_id
+and a.unique_id=e.unique_id
+and a.product_id=e.product_id
+and a.local_datetime=e.local_datetime
+where b.product_id is null
+and c.product_id is null
+and d.product_id is null
+and e.product_id is null)
+where rev_rank=1);
+
+
+
+-- Combine products and get new ranking
+
+create temp table final_rankings as
+select
+*,
+rank2 as rank3
+from top_5
+union
+select
+*,
+10+rank2 as rank3
+from second_5
+union
+select
+*,
+20+rank2 as rank3
+from third_5
+union
+select
+*,
+30+rank2 as rank3
+from fourth_5
+union
+select
+*,
+40+rank2 as rank3
+from best_of_the_rest;
+
+
+
+create temp table final_rankings2 as
+select
+a.*,
+a2.new_category,
+row_number() over (partition by a2.unique_id order by a2.rank3) as final_rank,
+row_number() over (partition by a.unique_id order by a.overall_rank) as current_rank2
+from sb_products_scored2 as a
+inner join
+final_rankings as a2
+on a.gap_id=a2.gap_id
+and a.unique_id=a2.unique_id
+and a.product_id=a2.product_id
+and a.local_datetime=a2.local_datetime
+inner join
+prime_product_returned as b
+on a.unique_id=b.unique_id;
+
+select count(gap_id) from final_rankings2;
+-- 617,348
+
+drop table if exists analytics_uk.sb_final_rankings3b;
+create table analytics_uk.sb_final_rankings3b as
+select
+*,
+rank() over (partition by unique_id||new_category order by final_rank) as rank_within_category
+from
+(select distinct * from ((select
+gap_id
+	,properties_sorted_by	
+	,properties_reason_getting_credit_card
+        ,local_datetime
+        ,next_local_datetime
+        ,unique_id
+        ,population
+        ,product_name
+	,product_name_gamed
+        ,product_id
+	,properties_balance_transfer_term_months
+	,properties_balance_transfer_fee
+        ,properties_purchase_term
+	,properties_cashback_rate
+	,purchases_intro_apr
+	,apr
+	,triple_lock_ind
+        ,eligibility
+        ,category
+        ,overall_rank as current_rank
+	,credit_score
+    ,cs_band_50
+	,tcc_calc_bt_category
+	,tcc_calc_other_categories_ex_cashback
+	,'low_choice' as segment
+	,final_rank
+	,case when final_rank<=5 then 'POOR_CREDIT' else 'BEST_OF_THE_REST' end as new_category
+	,current_rank2
+from low_choice_rank
+union
+select
+gap_id
+	,properties_sorted_by	
+	,properties_reason_getting_credit_card
+        ,local_datetime
+        ,next_local_datetime
+        ,unique_id
+        ,population
+        ,product_name
+	,product_name_gamed
+        ,product_id
+	,properties_balance_transfer_term_months
+	,properties_balance_transfer_fee
+        ,properties_purchase_term
+	,properties_cashback_rate
+	,purchases_intro_apr
+	,apr
+	,triple_lock_ind
+        ,eligibility
+        ,category
+        ,overall_rank as current_rank
+	,credit_score
+    ,cs_band_50
+	,tcc_calc_bt_category
+	,tcc_calc_other_categories_ex_cashback
+	,'high_choice' as segment
+	,final_rank
+	,new_category
+	,current_rank2
+	from final_rankings2
+union
+select
+gap_id
+	,properties_sorted_by	
+	,properties_reason_getting_credit_card
+        ,local_datetime
+        ,next_local_datetime
+        ,unique_id
+        ,population
+        ,product_name
+	,product_name_gamed
+        ,product_id
+	,properties_balance_transfer_term_months
+	,properties_balance_transfer_fee
+        ,properties_purchase_term
+	,properties_cashback_rate
+	,purchases_intro_apr
+	,apr
+	,triple_lock_ind
+        ,eligibility
+        ,category
+        ,overall_rank as current_rank
+	,credit_score
+    ,cs_band_50
+	,tcc_calc_bt_category
+	,tcc_calc_other_categories_ex_cashback
+	,'filtered' as segment
+	,rank2 as final_rank
+	,properties_sorted_by as new_category
+	,current_rank2
+	from filtered_ordering2)));
+
+
+-- Get ranking by segment
+
+create temp table rank_segment as
+select
+a.unique_id,
+a.final_rank,
+max(c.properties_ccdebt) as properties_ccdebt,
+max(c.revolver) as revolver
+
+from analytics_uk.sb_final_rankings3b as a
+inner join post_processed_uk.be_credit_card_apply_clicked as b
+on a.gap_id=b.gap_id
+and trunc(a.local_datetime)=b.local_date
+and a.product_id=b.product_id
+inner join sb_card_returns_pre as c
+on a.unique_id=c.unique_id
+group by 1,2;
+
+
+-- Calculate MRR by segment
+
+select
+case when properties_ccdebt=0 or properties_ccdebt is null then 'no_card_debt'
+when revolver=1 then 'revolver' else 'transactor' end as segment,
+(1.0000*sum(power(final_rank,-1))) as mrr_numerator,
+count(unique_id) as mrr_denominator
+from rank_segment
+group by 1;
+
+
+
+-- Get unique_IDs for 100 cases, including 5 cases for each of the filtered results
+
+create temp table sb as
+select
+unique_id,
+max(case when properties_sorted_by='ELIGIBILITY_DESC' then 1 else 0 end) as prod1,
+max(case when properties_sorted_by='PO_DURATION_DESC' then 1 else 0 end) as prod2,
+max(case when properties_sorted_by='BT_DURATION_DESC' then 1 else 0 end) as prod3,
+max(case when properties_sorted_by='APR_ASC' then 1 else 0 end) as prod4
+from analytics_uk.sb_final_rankings3b
+group by 1;
+
+create temp table prod1 as
+select
+unique_id from sb
+where prod1>0 limit 5;
+
+create temp table prod2 as
+select
+unique_id from sb
+where prod2>0 limit 5;
+
+create temp table prod3 as
+select
+unique_id from sb
+where prod3>0 limit 5;
+
+create temp table prod4 as
+select
+unique_id from sb
+where prod4>0 limit 5;
+
+create temp table prod_combined as
+select
+distinct unique_id
+from prod1
+union
+select
+distinct unique_id
+from prod2
+union
+select
+distinct unique_id
+from prod3
+union
+select
+distinct unique_id
+from prod4;
+
+select count(unique_id) from prod_combined;
+
+create temporary table cases_pre
+as select distinct a.unique_id
+from analytics_uk.sb_final_rankings3b as a
+left join prod_combined as b
+on a.unique_id=b.unique_id
+where b.unique_id is null
+limit 80;
+
+create temp table cases as
+select
+*
+from 
+prod_combined
+union
+select
+*
+from cases_pre;
+
+create temp table cases2 as
+select
+distinct
+a.unique_id,
+a.properties_sorted_by,
+a.product_id,
+a.statement,
+a.credit_score,
+a.cs_band_50,
+a.properties_ccdebt,
+a.properties_balance_transfer_term_months,
+a.properties_balance_transfer_fee,
+a.properties_purchase_term,
+a.purchases_intro_apr,
+a.cashbacksavings,
+a.apr,
+a.eligibility,
+a.projection_segment,
+a.revolver,
+a.bt_bucket_split,
+a.bt_bucket_split2,
+a.projected_balance,
+a.purchases_intro_monthly_rt,
+a.go_to_monthly_rt,
+a.bt_interest_1,
+a.purchases_interest_1,
+a.bt_interest_2,
+a.purchases_interest_2,
+a.bt_fees_1,
+a.bt_fees_2,
+a.issuer,
+a.properties_reason_getting_credit_card,
+a.triple_lock_ind,
+a2.tcc_calc_bt_category,
+a2.tcc_calc_other_categories_ex_cashback,
+a2.max_tcc_calc_bt_category,
+a2.max_tcc_calc_other_categories_ex_cashback,
+a2.max_cashbacksavings,
+a2.max_elig_sq,
+a2.normalised_bt_cost,
+a2.normalised_standard_cost,
+a2.normalised_cashbacksavings,
+a2.bt_category_rank_score,
+a2.standard_rank_score,
+a2.cashback_rank_score,
+b.final_rank,
+b.new_category,
+b.rank_within_category
+
+from sb_card_returns_exploded3 as a
+left join sb_products_scored2 as a2
+on a.product_id=a2.product_id
+and a.unique_id=a2.unique_id
+left join analytics_uk.sb_final_rankings3b as b
+on a.unique_id=b.unique_id
+and a.product_id=b.product_id
+inner join cases as c
+on a.unique_id=c.unique_id
+order by a.unique_id;
+
+select
+count(unique_id) as rows,
+count(distinct unique_ID||product_id)*60 as correct_count
+from cases2;
+
+create temp table cases_pre2b
+as 
+select distinct unique_id
+from
+(select distinct unique_id
+from cases
+union
+(select
+distinct unique_id
+from sb_products_scored2 
+limit 10000));
+
+create temp table cases2b as
+select
+distinct
+a.unique_id,
+a.properties_sorted_by,
+a.product_id,
+a.credit_score,
+a.cs_band_50,
+a.properties_ccdebt,
+a.properties_balance_transfer_term_months,
+a.properties_balance_transfer_fee,
+a.properties_purchase_term,
+a.purchases_intro_apr,
+a.cashbacksavings,
+a.apr,
+a.eligibility,
+a.projection_segment,
+a.revolver,
+a.issuer,
+a.properties_reason_getting_credit_card,
+a.triple_lock_ind,
+case when a2.tcc_calc_bt_category is null then a3.tcc_calc_bt_category else a2.tcc_calc_bt_category end as tcc_calc_bt_category,
+case when a2.tcc_calc_other_categories_ex_cashback is null then a3.tcc_calc_other_categories_ex_cashback else a2.tcc_calc_other_categories_ex_cashback end as tcc_calc_other_categories_ex_cashback,
+case when a2.max_tcc_calc_bt_category is null then a3.max_tcc_calc_bt_category else a2.max_tcc_calc_bt_category end as max_tcc_calc_bt_category,
+case when a2.max_tcc_calc_other_categories_ex_cashback is null then a3.max_tcc_calc_other_categories_ex_cashback else a2.max_tcc_calc_other_categories_ex_cashback end as max_tcc_calc_other_categories_ex_cashback,
+case when a2.max_cashbacksavings is null then a3.max_cashbacksavings else a2.max_cashbacksavings end as max_cashbacksavings,
+case when a2.max_elig_sq is null then a3.max_elig_sq else a2.max_elig_sq end as max_elig_sq,
+case when a2.normalised_bt_cost is null then a3.normalised_bt_cost else a2.normalised_bt_cost end as normalised_bt_cost,
+case when a2.normalised_standard_cost is null then a3.normalised_standard_cost else a2.normalised_standard_cost end as normalised_standard_cost,
+case when a2.normalised_cashbacksavings is null then a3.normalised_cashbacksavings else a2.normalised_cashbacksavings end as normalised_cashbacksavings,
+case when a2.bt_category_rank_score is null then a3.bt_category_rank_score else a2.bt_category_rank_score end as bt_category_rank_score,
+case when a2.standard_rank_score is null then a3.standard_rank_score else a2.standard_rank_score end as standard_rank_score,
+case when a2.cashback_rank_score is null then a3.cashback_rank_score else a2.cashback_rank_score end as cashback_rank_score,
+b.final_rank,
+b.new_category,
+b.rank_within_category
+
+from sb_card_returns_exploded3 as a
+left join sb_products_scored2 as a2
+on a.product_id=a2.product_id
+and a.unique_id=a2.unique_id
+left join sb_products_scored2_filtered as a3
+on a.product_id=a3.product_id
+and a.unique_id=a3.unique_id
+left join analytics_uk.sb_final_rankings3b as b
+on a.unique_id=b.unique_id
+and a.product_id=b.product_id
+inner join cases_pre2b as c
+on a.unique_id=c.unique_id;
+
+
+select
+count(unique_id) as rows,
+count(distinct unique_ID||product_id) as correct_count
+from cases2b;
+
+select * from cases2;
+select * from cases2b;
