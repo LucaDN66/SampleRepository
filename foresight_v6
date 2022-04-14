@@ -1724,3 +1724,5 @@ from cases2b;
 
 select * from cases2;
 select * from cases2b;
+
+--END COMMENT HERE
