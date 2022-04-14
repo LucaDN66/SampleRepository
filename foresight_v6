@@ -916,7 +916,7 @@ from top_cashback;
 -- Pull in category rank order
 
 create temporary table sb_category_rank (
-only_builder integer,
+only_builder_field integer,
 properties_reason_getting_credit_card VARCHAR(50),
 lower_cc_debt DECIMAL,
 upper_cc_debt DECIMAL,
@@ -924,7 +924,7 @@ revolver integer,
 Category_rank DECIMAL,
 Category VARCHAR(50));
 
-copy sb_category_rank (only_builder,
+copy sb_category_rank (only_builder_field,
 properties_reason_getting_credit_card,
 lower_cc_debt,
 upper_cc_debt,
@@ -950,7 +950,7 @@ a.cs_band_50,
 case when a.properties_ccdebt is null then 0 else a.properties_ccdebt end as cc_debt,
 a.revolver,
 a.properties_reason_getting_credit_card,
-max(case when b.unique_id is not null then 0 else 1 end) as only_builder
+max(case when b.unique_id is not null then 0 else 1 end) as only_builder_field
 
 from sb_products_scored2 as a
 left join saw_prime_prod_non_bt_adjt as b
@@ -985,7 +985,7 @@ and a.product_id=b.product_id
 and a.local_datetime=b.local_datetime
 left join
 sb_category_rank as c
-on b.only_builder=c.only_builder
+on b.only_builder_field=c.only_builder_field
 and b.revolver=c.revolver
 and b.cc_debt>=c.lower_cc_debt
 and b.cc_debt<c.upper_cc_debt
