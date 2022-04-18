@@ -61,6 +61,7 @@ order by unique_id_pre, overall_rank;
 
 -- Append on transactor / revolver flag
 
+drop table if exists revolver_flag;
 create temp table revolver_flag as
 select
 gap_id,
@@ -269,6 +270,7 @@ on 1=1;
 
 -- Import segment level input assumptions
 
+drop table if exists sb_input_asmpts_pre;
 create temporary table sb_input_asmpts_pre (
 Statement integer,
 Segment integer,
@@ -411,6 +413,7 @@ group by 1,2,3;
 
 -- Score products depending on where product is appearing
 
+drop table if exists sb_products_scored_pre;
 create temp table sb_products_scored_pre as
 select
 a.*
@@ -460,6 +463,7 @@ copy weightings (
     truncatecolumns MAXERROR 100000
 ;
 
+drop table if exists sb_products_scored;
 create temp table sb_products_scored as
     select a.*,
            b.eligibility_weight as elig_weight,
@@ -470,7 +474,7 @@ create temp table sb_products_scored as
 ;
 
 
-
+drop table if exists sb_products_scored2;
 create temp table sb_products_scored2 as
 select
 *
@@ -490,7 +494,7 @@ where properties_sorted_by not in ('ELIGIBILITY_DESC',
 --from sb_products_scored2
 --limit 100;
 
-
+drop table if exists sb_products_scored2_filtered;
 create temp table sb_products_scored2_filtered as
 select
 *
@@ -507,6 +511,7 @@ where properties_sorted_by in ('ELIGIBILITY_DESC',
 -- PART 3 - PRODUCT CATEGORY ASSIGNMENT
 -- Pull in product catalogue
 
+drop table if exists sb_product_catalogue_pre;
 create temporary table sb_product_catalogue_pre (
 Product VARCHAR(50),
 ALTERNATIVE VARCHAR(50),
@@ -541,6 +546,7 @@ TRUNCATECOLUMNS MAXERROR 100000;
 
 -- Apply product catalogue overrides
 
+drop table if exists sb_product_catalogue;
 create temporary table sb_product_catalogue as
 select
 Product,
@@ -566,7 +572,7 @@ where product<>'Product';
 
 -- PART 3.1 SORTING FOR FILTERED RESULTS
 
-
+drop table if exists filtered_ordering;
 create temp table filtered_ordering as
 select
 gap_id
@@ -583,7 +589,7 @@ gap_id
 
 from sb_products_scored2_filtered;
 
-
+drop table if exists filtered_ordering2;
 create temp table filtered_ordering2 as
 select
 a.*
@@ -606,6 +612,7 @@ and a.product_id=b.product_id;
 
 -- Get searches with only builder results
 
+drop table if exists only_builder;
 create temp table only_builder
 as select
 gap_id,
@@ -624,6 +631,7 @@ on a.product_id=b.product
 group by 1,2,3,4,5,6;
 
 
+drop table if exists prime_product_returned;
 create temp table prime_product_returned
 as select
 distinct
@@ -640,6 +648,7 @@ or properties_reason_getting_credit_card='balance-transfer';
 
 -- Add in table to identify BT only builder popn for later
 
+drop table if exists saw_prime_prod_non_bt_adjt;
 create temp table saw_prime_prod_non_bt_adjt
 as select
 distinct
@@ -652,6 +661,7 @@ from only_builder
 where non_prime_product_ind=0;
 
 
+drop table if exists only_builder2;
 create temp table only_builder2
 as select
 distinct
@@ -666,7 +676,7 @@ on a.gap_id=b.gap_id
 and a.unique_id=b.unique_id
 where b.gap_id is null;
 
-
+drop table if exists only_builder3;
 create temp table only_builder3
 as select
 distinct
@@ -682,6 +692,7 @@ on a.unique_id=b.unique_id;
 -- Ranking over product ID where scores are equal to allow for deterministic unit testings, in production we should randomise over matched scores
 -- Figure out if there will be less than 5 results if no more than 2 results per issuer rule applied
 
+drop table if exists low_choice_rank_pre;
 create temp table low_choice_rank_pre as
 select
 a.unique_id,
@@ -696,7 +707,7 @@ group by 1;
 
 
 -- Do sorting without issuer cap in cases where less than 5 if rule applied
-
+drop table if exists low_choice_rank_group1;
 create temp table low_choice_rank_group1 as
 select * from
 (select
@@ -715,7 +726,7 @@ where rank2<=5;
 
 
 -- Do sorting with issuer cap otherwise
-
+drop table if exists low_choice_rank_group2;
 create temp table low_choice_rank_group2 as
 select * from
 (select
@@ -735,7 +746,7 @@ where rank2<=5;
 
 
 -- Pull list of potential products for best of the rest
-
+drop table if exists low_choice_best_of_the_rest;
 create temp table low_choice_best_of_the_rest as
 select
 a.*,
@@ -757,7 +768,7 @@ and d.product_id is null;
 
 
 -- Merge results
-
+drop table if exists low_choice_rank_merge;
 create temp table low_choice_rank_merge as
 select
 *,
@@ -774,6 +785,7 @@ select
 10+rank2 as rank3
 from low_choice_best_of_the_rest;
 
+drop table if exists low_choice_rank;
 create temp table low_choice_rank as
 select
 *,
@@ -789,7 +801,7 @@ from low_choice_rank_merge;
 -- THIS LEVERAGES CATEGORY CLICK PROPENSITY ALONGSIDE PRODUCT SCORING FOR RANKING
 
 -- Get top 5 BT cards
-
+drop table if exists top_bt;
 create temp table top_bt as
 select
 gap_id
@@ -806,7 +818,7 @@ and b.BALANCE_TRANSFER=1;
 
 
 -- Get top 5 Purchase cards
-
+drop table if exists top_purchase;
 create temp table top_purchase as
 select
 gap_id
@@ -826,7 +838,7 @@ and b.POOR_CREDIT=0;
 
 
 -- Get top 5 builder
-
+drop table if exists top_builder;
 create temp table top_builder as
 select
 gap_id
@@ -845,7 +857,7 @@ or b.POOR_CREDIT=1);
 
 
 -- Get top 5 cashback
-
+drop table if exists top_cashback;
 create temp table top_cashback as
 select
 gap_id
@@ -914,7 +926,7 @@ from top_cashback;
 
 
 -- Pull in category rank order
-
+drop table if exists sb_category_rank;
 create temporary table sb_category_rank (
 only_builder_field integer,
 properties_reason_getting_credit_card VARCHAR(50),
@@ -938,7 +950,7 @@ DELIMITER ','
 TIMEFORMAT 'auto'
 TRUNCATECOLUMNS MAXERROR 100000;
 
-
+drop table if exists sb_products_scored2_adj;
 create temp table sb_products_scored2_adj as
 select
 a.gap_id,
@@ -961,7 +973,7 @@ group by 1,2,3,4,5,6,7,8,9;
 
 -- Rank products based on category rank then top 5 from each of relevant groups
 
-
+drop table if exists category_rank_product2;
 create temp table category_rank_product2 as
 select
 a.gap_id
@@ -995,7 +1007,7 @@ and b.properties_reason_getting_credit_card=c.properties_reason_getting_credit_c
 
 
 -- Get top 5 category rank 1 products for each search
-
+drop table if exists top_1;
 create temp table top_1 as
 select
 *,
@@ -1006,6 +1018,7 @@ from category_rank_product2
 where category_rank=1
 and rank<=1;
 
+drop table if exists second_1;
 create temp table second_1 as
 select * from
 (select
@@ -1023,6 +1036,7 @@ where a.category_rank=2
 and b.product_id is null)
 where rank2<=1;
 
+drop table if exists top_2_5;
 create temp table top_2_5 as
 select
 gap_id
@@ -1065,6 +1079,7 @@ and c.product_id is null)
 where issuer_rank<=2)
 where rank2<=4;
 
+drop table if exists second_2_5;
 create temp table second_2_5 as
 select
 gap_id
@@ -1113,6 +1128,7 @@ and d.product_id is null)
 where issuer_rank<=2)
 where rank2<=4;
 
+drop table if exists top_5;
 create temp table top_5 as
 select
 gap_id
@@ -1146,6 +1162,7 @@ gap_id
 , rank2+1 as rank2
 from top_2_5;
 
+drop table if exists second_5;
 create temp table second_5 as
 select
 gap_id
@@ -1179,6 +1196,7 @@ gap_id
 , rank2+1 as rank2
 from second_2_5;
 
+drop table if exists third_5;
 create temp table third_5 as
 select
 gap_id
@@ -1221,6 +1239,7 @@ and c.product_id is null)
 where issuer_rank<=2)
 where rank2<=5;
 
+drop table if exists fourth_5;
 create temp table fourth_5 as
 select
 gap_id
@@ -1270,7 +1289,7 @@ where issuer_rank<=2)
 where rank2<=5;
 
 
-
+drop table if exists best_of_the_rest;
 create temp table best_of_the_rest as
 select
 gap_id
@@ -1338,7 +1357,7 @@ where rev_rank=1);
 
 
 -- Combine products and get new ranking
-
+drop table if exists final_rankings;
 create temp table final_rankings as
 select
 *,
@@ -1366,7 +1385,7 @@ select
 from best_of_the_rest;
 
 
-
+drop table if exists final_rankings2;
 create temp table final_rankings2 as
 select
 a.*,
