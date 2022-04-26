@@ -1444,6 +1444,8 @@ gap_id
 --PULL STATS HERE
 
 
+--DELETE REST OF SCRIPT HERE
+
 -- Get ranking by segment
 
 create temp table rank_segment as
