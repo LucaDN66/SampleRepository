@@ -476,7 +476,7 @@ where properties_sorted_by in ('ELIGIBILITY_DESC',
 -- PART 3 - PRODUCT CATEGORY ASSIGNMENT
 -- Pull in product catalogue
 
-create temporary table sb_product_catalogue_pre (
+create temporary table sb_product_catalogue_table_pre (
 Product VARCHAR(50),
 ALTERNATIVE VARCHAR(50),
 BALANCE_TRANSFER VARCHAR(50),
@@ -489,7 +489,7 @@ PURCHASE VARCHAR(50),
 REWARDS VARCHAR(50),
 STATIC_CARD VARCHAR(50));
 
-copy sb_product_catalogue_pre (Product,
+copy sb_product_catalogue_table_pre (Product,
 ALTERNATIVE,
 BALANCE_TRANSFER,
 CASHBACK,
@@ -510,7 +510,7 @@ TRUNCATECOLUMNS MAXERROR 100000;
 
 -- Apply product catalogue overrides
 
-create temporary table sb_product_catalogue as
+create temporary table sb_product_catalogue_table as
 select
 Product,
 ALTERNATIVE,
@@ -529,7 +529,7 @@ PURCHASE,
 REWARDS,
 STATIC_CARD
 
-from sb_product_catalogue_pre
+from sb_product_catalogue_table_pre
 where product<>'Product';
 
 
@@ -588,7 +588,7 @@ and apr>25) or (product_id='zopa_card_builder' or product_id='lendable_level_car
 then 1 else 0 end) as non_prime_product_ind
 
 from sb_products_scored2 as a
-inner join sb_product_catalogue as b
+inner join sb_product_catalogue_table as b
 on a.product_id=b.product
 group by 1,2,3,4,5,6;
 
@@ -769,7 +769,7 @@ gap_id
 , issuer
 , row_number() over (partition by unique_id order by bt_category_rank_score desc, product_id) as rank
 from sb_products_scored2 as a
-inner join sb_product_catalogue as b
+inner join sb_product_catalogue_table as b
 on a.product_id=b.product
 and b.BALANCE_TRANSFER=1;
 
@@ -786,7 +786,7 @@ gap_id
 , issuer
 , row_number() over (partition by unique_id order by standard_rank_score desc, product_id) as rank
 from sb_products_scored2 as a
-inner join sb_product_catalogue as b
+inner join sb_product_catalogue_table as b
 on a.product_id=b.product
 and (b.PURCHASE=1
 or b.LOW_APR=1)
@@ -806,7 +806,7 @@ gap_id
 , issuer
 , row_number() over (partition by unique_id order by standard_rank_score desc, product_id) as rank
 from sb_products_scored2 as a
-inner join sb_product_catalogue as b
+inner join sb_product_catalogue_table as b
 on a.product_id=b.product
 and (b.CREDIT_BUILDER=1
 or b.POOR_CREDIT=1);
@@ -826,7 +826,7 @@ gap_id
 , row_number() over (partition by unique_id order by cashback_rank_score desc, product_id) as rank
 
 from sb_products_scored2 as a
-inner join sb_product_catalogue as b
+inner join sb_product_catalogue_table as b
 on a.product_id=b.product
 and (b.CASHBACK=1
 or b.REWARDS=1);
@@ -1444,7 +1444,7 @@ gap_id
 --PULL STATS HERE
 
 
---DELETE REST OF SCRIPT HERE
+--DELETE REST OF SCRIPT HERE 
 
 -- Get ranking by segment
 
