@@ -47,8 +47,9 @@ select  gap_id
 
 
 from data_lake.event_be_credit_card_offer_returned as a
---CHANGE OFFER DATES HERE
+--CHANGE OFFER DATES HERE CDN1 START
     where date("timestamp") = '2022-04-05'
+--CHANGE OFFER DATES HERE CDN1 END
     and cs_site = 'uk'
   and properties_issuer not in ('GuarantorMyLoan','amigo','aspire','cashplus_cc','loqbox','trust_two','uk_credit') 
   and (cast(properties_eligibility as float)>=5 or properties_issuer='Capital One')
@@ -116,8 +117,9 @@ else 'other' end as properties_reason_getting_credit_card
 
 from data_lake.event_be_credit_card_questions_submitted
 where properties_journey_name in ('credit-card-triple-lock-questions-v3','credit-card-triple-lock-questions-v4')
---CHANGE SEARCH DATES HERE
+--CHANGE SEARCH DATES HERE CDN2 START
 and "timestamp" >= '2022-02-01';
+--CHANGE SEARCH DATES HERE CDN2 END
 
 -- Deduped
 
