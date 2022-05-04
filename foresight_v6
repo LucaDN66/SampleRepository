@@ -588,7 +588,7 @@ and apr>25) or (product_id='zopa_card_builder' or product_id='lendable_level_car
 then 1 else 0 end) as non_prime_product_ind
 
 from sb_products_scored2 as a
-inner join sb_product_catalogue as b
+left join sb_product_catalogue as b
 on a.product_id=b.product
 group by 1,2,3,4,5,6;
 
@@ -770,7 +770,7 @@ gap_id
 , issuer
 , row_number() over (partition by unique_id order by bt_category_rank_score desc, product_id) as rank
 from sb_products_scored2 as a
-inner join sb_product_catalogue as b
+left join sb_product_catalogue as b
 on a.product_id=b.product
 and b.BALANCE_TRANSFER=1;
 
@@ -787,7 +787,7 @@ gap_id
 , issuer
 , row_number() over (partition by unique_id order by standard_rank_score desc, product_id) as rank
 from sb_products_scored2 as a
-inner join sb_product_catalogue as b
+left join sb_product_catalogue as b
 on a.product_id=b.product
 and (b.PURCHASE=1
 or b.LOW_APR=1)
@@ -807,7 +807,7 @@ gap_id
 , issuer
 , row_number() over (partition by unique_id order by standard_rank_score desc, product_id) as rank
 from sb_products_scored2 as a
-inner join sb_product_catalogue as b
+left join sb_product_catalogue as b
 on a.product_id=b.product
 and (b.CREDIT_BUILDER=1
 or b.POOR_CREDIT=1);
@@ -827,7 +827,7 @@ gap_id
 , row_number() over (partition by unique_id order by cashback_rank_score desc, product_id) as rank
 
 from sb_products_scored2 as a
-inner join sb_product_catalogue as b
+left join sb_product_catalogue as b
 on a.product_id=b.product
 and (b.CASHBACK=1
 or b.REWARDS=1);
@@ -880,6 +880,13 @@ gap_id
 , issuer
 , 'CASHBACK' as category
 from top_cashback;
+
+-- CHECK NULL JOINS
+select distinct unique_id,
+        count(*) over (partition by unique_id) as num_null_joins
+from category_rank_product_pre
+where rank is null;
+
 
 
 
