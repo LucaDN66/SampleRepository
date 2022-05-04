@@ -882,9 +882,9 @@ gap_id
 from top_cashback;
 
 -- CHECK NULL JOINS
-select distinct unique_id,
-        count(*) over (partition by unique_id) as num_null_joins
-from category_rank_product_pre
+select distinct product_id,
+        count(*) over (partition by product_id) as num_null_joins
+from category_rank_product_pre_cdn
 where rank is null;
 
 
