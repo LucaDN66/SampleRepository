@@ -967,10 +967,6 @@ and b.cc_debt<c.upper_cc_debt
 and trim(a.category)=trim(c.Category)
 and b.properties_reason_getting_credit_card=c.properties_reason_getting_credit_card;
 
--- CHECK NULL JOINS
-select count(distinct unique_id) as num_null_joins
-from category_rank_product2
-where category_rank is null;
 
 
 
