@@ -574,8 +574,8 @@ and a.product_id=b.product_id;
 -- NOTE THIS IS BASED SOLELY ON PURCHASE SAVINGS WITH ALL CARDS APPEARING IN BUILDER
 
 -- Get searches with only builder results
-drop table if exists only_builder;
-create temp table only_builder
+drop table if exists only_builder_table;
+create temp table only_builder_table
 as select
 gap_id,
 unique_id,
@@ -601,7 +601,7 @@ unique_id,
 local_datetime,
 next_local_datetime
 
-from only_builder
+from only_builder_table
 where non_prime_product_ind=0
 -- Add in condition to exclude users looking for BT from only builder
 or properties_reason_getting_credit_card='balance-transfer';
@@ -617,7 +617,7 @@ unique_id,
 local_datetime,
 next_local_datetime
 
-from only_builder
+from only_builder_table
 where non_prime_product_ind=0;
 
 drop table if exists only_builder2;
@@ -629,7 +629,7 @@ a.unique_id,
 a.local_datetime,
 a.next_local_datetime
 
-from only_builder as a
+from only_builder_table as a
 left join prime_product_returned as b
 on a.gap_id=b.gap_id
 and a.unique_id=b.unique_id
@@ -893,7 +893,7 @@ where rank is null;
 -- Pull in category rank order
 drop table if exists sb_category_rank;
 create temporary table sb_category_rank (
-only_builder_column integer,
+only_builder integer,
 properties_reason_getting_credit_card VARCHAR(50),
 lower_cc_debt DECIMAL,
 upper_cc_debt DECIMAL,
@@ -901,7 +901,7 @@ revolver integer,
 Category_rank DECIMAL,
 Category VARCHAR(50));
 
-copy sb_category_rank (only_builder_column,
+copy sb_category_rank (only_builder,
 properties_reason_getting_credit_card,
 lower_cc_debt,
 upper_cc_debt,
@@ -926,7 +926,7 @@ case when a.credit_score is null then 0 else a.credit_score end as credit_score,
 case when a.properties_ccdebt is null then 0 else a.properties_ccdebt end as cc_debt,
 a.revolver,
 a.properties_reason_getting_credit_card,
-max(case when b.unique_id is not null then 0 else 1 end) as only_builder_column
+max(case when b.unique_id is not null then 0 else 1 end) as only_builder
 
 from sb_products_scored2 as a
 left join saw_prime_prod_non_bt_adjt as b
@@ -960,7 +960,7 @@ and a.product_id=b.product_id
 and a.local_datetime=b.local_datetime
 left join
 sb_category_rank as c
-on b.only_builder_column=c.only_builder_column
+on b.only_builder=c.only_builder
 and b.revolver=c.revolver
 and b.cc_debt>=c.lower_cc_debt
 and b.cc_debt<c.upper_cc_debt
