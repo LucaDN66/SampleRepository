@@ -919,7 +919,7 @@ gap_id
 , 'CASHBACK' as category
 from top_cashback;
 
---CHECK NULL JOINS
+--CHECK NULL JOINS START
 select
 product_id, count(gap_id) as number_null_joins
 from sb_card_views_pre as a
